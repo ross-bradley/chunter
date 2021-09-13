@@ -131,7 +131,7 @@ void output(char* filename, int lineNum) {
 
   switch (g_outputmode) {
     case MODE_TEXT:
-      printf("%s:%d:%s\n", filename, lineNum, g_buffer);
+      printf("%s:%d: %s\n", filename, lineNum, g_buffer);
       break;
 
     case MODE_HTML:
@@ -204,6 +204,7 @@ void processFile(char* filename) {
         break;
 
       case '\n':
+        // if we're handling a #define, #include etc. we need to regex it now
         if (bHash) {
           g_buffer[idx++] = '\0';
           bStarted = 0;
@@ -230,12 +231,23 @@ void processFile(char* filename) {
       case '\\':
         bStarted = 1;
         nextc = (char)fgetc(fd);
-        if ((nextc != '\r') && (nextc != '\n')) {
+        if (nextc == '\r') nextc = (char)fgetc(fd); // we don't care about Windows line endings
+        if (nextc != '\n') {
           g_buffer[idx++] = c;
           g_buffer[idx++] = nextc;
           c = nextc;
         } else {
-          c = lastc;
+          // we got an escaped line ending - if it's a define we need to regex it, otherwise, continue as normal
+          if (bHash) {
+            bStarted = 0;
+            bHash = 0;
+            idx = 0;
+            c = '\0';
+            doRegex(filename, lineNum);
+          } else {
+            c = lastc;
+          }
+          lineNum++;
         }
         break;
 
@@ -259,7 +271,7 @@ void processFile(char* filename) {
       // check the next char to see if this is a comment
       // skip comments, otherwise it's probably a division etc so we keep it
       case '/':
-        bStarted = 1;
+        //bStarted = 1; // removed as not expecting lines to begin with a "/" unless they are a comment (caveat - doesn't necessaril hold for all languages we might see!)
         if (bInQuotes) {
           g_buffer[idx++] = c;
         } else {
@@ -293,32 +305,35 @@ void processFile(char* filename) {
         }
         break;
 
-      // define, include etc
-      // just eat these lines
+      // define, include etc if at start of line. Flag it so that we regex on the end of the line, not a ";"
       case '#':
         if (!bStarted) {
           bStarted = 1;
           bHash = 1;
-          //fgets(g_trash, 65535, fd);
-          //lineNum++;
-        } else {
-          g_buffer[idx++];
         }
+        g_buffer[idx++] = c;
         break;
 
-      case '{':
-      case '}':
+      //case '{':
+      //case '}':
       case ';':
         g_buffer[idx++] = c;
         if (!bInQuotes) {
           g_buffer[idx++] = '\0';
           bStarted = 0;
+          bHash = 0;
           idx = 0;
           c = '\0';
           doRegex(filename, lineNum);
         }
         break;
 
+     case '}':
+       if (bStarted) {
+         g_buffer[idx++] = c;
+       }
+       break;
+ 
       // any other character
       default:
         bStarted = 1;
@@ -328,7 +343,7 @@ void processFile(char* filename) {
     // TODO: anything other than this
     if (idx >= g_bufferSize) {
       g_bufferSize += 1024;
-      g_buffer = realloc(g_buffer, g_bufferSize);
+      g_buffer = realloc(g_buffer, g_bufferSize + 1);
     } 
 
     lastc = c;
